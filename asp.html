@@ -1,0 +1,335 @@
+<html>
+<head>
+  <title>Asp</title>
+  <link href="https://fonts.googleapis.com/css?family=Inconsolata" rel="stylesheet">
+  <link rel="stylesheet" type="text/css" href="styles.css">
+  <script src="stuff.js" defer></script>
+</head>
+<body>
+    <div class="above">
+      <div class="left">
+	<div class="logo">
+          <h1><a href="index.html">Peter's blog<span class="green">:</span></a></h1>
+	</div>
+      </div>
+      <div class="right">
+	<div class="header">
+          <div>
+            <div>
+              <a href="https://github.com/peterebden">Github</a>
+            </div>
+          </div>
+	</div>
+      </div>
+    </div>
+    <div class="above">
+      <div class="left">
+        <h1>Asp</h1>
+        
+<h2>Please</h2>
+<p>For more general background on the system as a whole, see the article on Please itself.
+This is a bit of a deeper dive into the interpreter that it uses for reading its BUILD files.</p>
+
+<p>
+The files themselves are written in an as-yet-unnamed language which is a syntactical
+subset of Python. There's a <a href="https://www.please.build/language.html">somewhat formal description</a>,
+it (unsurprisingly) bears a lot of resemblance to Google's Skylark / Starlark language.</p>
+
+
+<h2>History</h2>
+<p>From day 1 we knew we needed to be able to parse these files, but early on we rejected
+the idea of writing a custom parser on the basis of it being too much work - which was probably
+a good decision, since cutting out something of that size got us to a working prototype
+much sooner. Hence the very early versions<span class="fnrel">
+<sup><a href="#fn1">[1]</a></sup>
+<span class="footnote" style="display:none">These are much too old to have had real version numbers, but if they did they'd start with <code>0.0.</code> and have various Greek letters warding off the unwary.</span>
+</span> embedded CPython as an interpreter using
+a combination of cgo, their <a href="https://docs.python.org/3/extending/index.html">embedding APIs</a>
+and some C code to glue it all together. It's fair to say that this was not a complete
+success, some subtle misinterpretation of the reference counts<span class="fnrel">
+<sup><a href="#fn2">[2]</a></sup>
+<span class="footnote" style="display:none">The Python API is well-documented and not really <em>too</em> hard to get right, but there are some awkward gymnastics needed for the way builtins and <code>import</code> replacements work with BUILD file scope, so likely I got something wrong in there somewhere.</span>
+</span> led to less-than-stellar
+stability and the amount of C code needed was a lot more than we wanted. Fortunately
+all that code is now lost to the mists of time<span class="fnrel">
+<sup><a href="#fn3">[3]</a></sup>
+<span class="footnote" style="display:none">If anyone finds it again, let me know so I can stick another stake through its heart.</span>
+</span>.</p>
+
+<p>
+Backing off from that, we discovered <a href="https://cffi.readthedocs.io">CFFI</a>, a spin-off from
+the amazing <a href="http://pypy.org">PyPy</a> project. This gives a much higher-level embedding API
+which required only some very lightweight C shims as a kind of a common language between
+Go and Python. This was a big improvement and got us well past version 1.0.</p>
+
+<p>
+The first fly in this ointment was when I was writing up installation instructions, and
+realised that it actually wasn't as easy as all that. The .deb packages for PyPy didn't
+install the dynamic library, which Please was linked to; if it wasn't there (or wasn't
+in the right place) it would drop out immediately on running with an error from the
+dynamic linker - and we couldn't even print an error message at that point.</p>
+
+<p>
+I dithered a bit on solving that, which turned out to be a surprisingly good strategy<span class="fnrel">
+<sup><a href="#fn4">[4]</a></sup>
+<span class="footnote" style="display:none">I wouldn't endorse it in general, but waiting for someone else to solve your problem for you does sometimes bear fruit.</span>
+</span>
+because CFFI 1.5 popped up with <a href="https://cffi.readthedocs.io/en/latest/embedding.html">embedding</a>
+support, meaning that it could be built into a separate .so file and loaded dynamically.
+This was a little more work for me, since now I had to <code>dlopen</code> the thing manually, but
+that was far preferable given the increased control we had - and crucially that it was
+possible to ship Please with parsers for CPython as well as PyPy, and simply try loading
+each in sequence until we found one that worked. A little later I hacked in support for
+downloading a <a href="https://github.com/squeaky-pl/portable-pypy">portable PyPy</a> if nothing else
+worked out of the box.</p>
+
+<p>
+This trucked on fairly well for a couple of years, until eventually some more
+<a href="https://github.com/thought-machine/please/issues/253">subtle issues</a> started to rear their
+heads. Effectively we were still relying on the system Python, which didn't always work
+quite 100% as well as you might like. After some thought, and being snowed in<span class="fnrel">
+<sup><a href="#fn5">[5]</a></sup>
+<span class="footnote" style="display:none">Obviously figuratively... it's not <em>that</em> cold here. It was certainly a pretty wet and unpleasant day to be outside though.</span>
+</span> one winter's
+day I hacked the build process a bit more to statically link Python into the binary. That
+meant we required Python at build time but not after install. On the down side it was
+Python 2 which obviously wasn't ideal given its upcoming end-of-life, but Python 3 took
+a 30% performance drop<span class="fnrel">
+<sup><a href="#fn6">[6]</a></sup>
+<span class="footnote" style="display:none">Profiling the whole Go / C / Python gestalt was tricky so it was hard to get a handle on why; my suspicion is the constant <code>encode()</code> and <code>decode()</code> calls required every time we needed to turn a <code>str</code> into a <code>const char*</code>.</span>
+</span> which was a bit too hard to swallow.</p>
+
+<p>
+So at this point, things more or less worked, so clearly this was a good time to leave
+well enough alone. Of course, software developers rarely heed such things...</p>
+
+
+<h2>Parsing</h2>
+<p>Some months later, I'd cast my eye (and a profiler) at the parser again, but was having
+a hard time speeding it up. Various things seemed problematic, like the GIL (which we
+don't really need since BUILD files shouldn't be able to modify one another's data) and
+the overhead of going through cgo calls (and there were a lot of those). One day it
+occurred to me that those problems might just go (hah) away if everything was written in Go.</p>
+
+<p>
+I kept an eye on a few things; for example <a href="https://github.com/grumpyhome/grumpy">Grumpy</a>
+which turned out not to really be what we wanted, but was certainly interesting. There didn't
+seem to be a really obvious candidate out there, and to be honest I thought it would be
+fun to have a crack myself. In the end I had some spare time at roughly the same point I
+ran across <a href="https://github.com/alecthomas/participle">Participle</a> which seemed a nice way
+of creating the parser (essentially, you annotate your AST using struct tags containing the
+EBNF grammar, and it creates a parser for you).</p>
+
+<p>
+Of course, it wasn't quite that easy; you have to supply a lexer, which you can use
+<a href="https://golang.org/pkg/text/scanner/">text/scanner</a> for, but it turns out that only really
+works for Go-like syntaxes<span class="fnrel">
+<sup><a href="#fn7">[7]</a></sup>
+<span class="footnote" style="display:none">I would not be surprised if you could create a C parser using it, for example.</span>
+</span> which Python is not (you can't customise the comment character,
+Python's strings don't all work, but more fundamentally it needs to track indentation to
+indicate the end of indented blocks<span class="fnrel">
+<sup><a href="#fn8">[8]</a></sup>
+<span class="footnote" style="display:none">You could argue for kicking this downstream to the parser, but then that'd have to do a vast amount of worrying about column positions, which Participle certainly wouldn't handle. Having the lexer emit explicit unindent tokens on leaving scopes was definitely the right decision.</span>
+</span>). Fortunately a lexer isn't <em>that</em> much code; I took
+that interface as my model and wrote up a custom lexer that understood Python syntax. Given
+that the parser was basically written for me as I created the AST, it was pretty easy to
+iterate the lexer with a bunch of unit tests until it more or less behaved itself.</p>
+
+<p>
+Having a working parser, the next thing to set to work on was the interpreter. This time
+there were no handy libraries to help me out, so I set to with an innocuous little struct
+named <code>scope</code> and a simple object scheme based on a Go interface. There are other ways one
+could tackle this<span class="fnrel">
+<sup><a href="#fn9">[9]</a></sup>
+<span class="footnote" style="display:none">The obvious alternative is to have a concrete struct that knows its type and delegates operations appropriately. I don't think this will prove better overall, and does a poorer job of using Go's builtin abstractions, but I might try it one day.</span>
+</span>, and indeed I wonder about exploring some eventually, but in the end
+this is functionally unchanged from the original.</p>
+
+<p>
+It bears noting that this really is a direct interpreter - it takes the AST and evaluates
+things directly off it. There used to be a wistful little TODO somewhere mentioning that
+maybe we should convert to a bytecode-style stream of instructions, but that was
+"accidentally" lost at some point.</p>
+
+<p>
+Once the interpreter was up and running, it was simply a matter of iterating everything
+until we could support the entire required grammar. The exact endpoint was somewhat in
+flux throughout - for example, at one point I disallowed nested list comprehensions,
+implicit string concatenation and raw strings, all of which were later restored in the
+interest of reducing disruption. Conversely, <code>filter</code>, sets and generators never made it.</p>
+
+
+<h2>Optimisation</h2>
+<p>The first fully-working interpreter worked out roughly as fast as the old one - not bad
+for a first effort, but not exactly what I'd hoped for. Fortunately there was plenty of
+scope for optimising and profiling was now very easy using <a href="https://golang.org/pkg/runtime/pprof/">pprof</a>,
+so a series of optimisations rapidly took shape:
+<ul>
+<li>The built-in rules, and anything brought in via <code>subinclude()</code>, get a light pass
+   from a basic peephole optimiser. Mostly it identifies simple cases like direct scope
+   lookups of variables and fully constant expressions that can be precalculated.</li>
+<li>The internal "calling convention" for native functions was converted to being via slice
+   instead of map, which is rather more efficient.</li>
+<li>The configuration object got a specialised implementation - originally it was just a
+   dict which had to be duplicated in case anyone called <code>package()</code>.</li>
+<li>Participle was finally replaced in favour of a fully handwritten parser. It was sad to
+   see it go, but you can't really beat a custom parser, and it had served me well.</li>
+<li>I monkeyed with the implementation of <code>subinclude()</code> a lot, but the biggest win was
+   going from storing the AST to be re-interpreted in the new scope to storing the objects
+   created after interpretation and just copying them in. This required some support for
+   "freezing" mutable objects like lists and dicts so it's not possible to accidentally
+   modify them in one BUILD file and have another see it.</li>
+<li>The builtin build rules are similarly stored as a serialised set of values rather than
+   ASTs to be reinterpreted.</li>
+<li>Plus a bunch of other bits and pieces I've forgotten by now.</li>
+</ul>
+The aggregate of all of those brought it to roughly 4x faster than the old parser. The
+total CPU use is much closer than that, but the radically increased parallelism is basically
+always a big win on modern machines. For our internal repo at Thought Machine (my standard
+test case since it's much bigger than the Please one) parsing everything<span class="fnrel">
+<sup><a href="#fn10">[10]</a></sup>
+<span class="footnote" style="display:none">I would have saved myself a lot of time if I'd thought back at the beginning to bind <code>time plz query alltargets > /dev/null</code> to a keyboard macro.</span>
+</span> came down from
+around 3.4 seconds to about 0.8. On smaller repos it still won handily due to less startup
+overhead.</p>
+
+<p>
+In a rather nice twist, the new parser is sufficiently faster that it feels fine not to
+show any progress for slow query operations (e.g. <code>query alltargets</code> or <code>query revdeps</code>
+that may need to load the whole repo), which itself saves a little time since showing
+the animated progress in your shell turned out not to be totally free.</p>
+
+
+<h2>Extensions</h2>
+<p>Part of the motivation for the whole undertaking was being able to customise things to
+the way Please wants them to be. An obvious and immediate example was stripping out the
+hacky code we had previously for type-checking function arguments<span class="fnrel">
+<sup><a href="#fn11">[11]</a></sup>
+<span class="footnote" style="display:none">Basically, it parsed the docstring (no function annotations because we were Python 2 compatible!) to extract types and inserted a bunch of <code>assert</code> statements to check them. This was actually pretty important since otherwise it was all too easy to insert a string instead of a list or vice versa and the errors tended to be pretty obtuse.</span>
+</span> in favour of
+<a href="https://www.python.org/dev/peps/pep-3107/">PEP-3107</a> / <a href="https://www.python.org/dev/peps/pep-0484/annotations">PEP-484</a>
+style annotations. Ours are rather simpler than Python's; there is no <code>typing</code> module,
+instead just using type names like <code>int</code> and <code>list</code>, and there's no specification of the
+contents of a list. Conversely, the types are checked whenever the function is called
+so we can always assume they match.</p>
+
+<p>
+The rules for default function arguments are different as well; they are evaluated at
+call time, not parse time, thus avoiding what's arguably Python's <a href="https://docs.python-guide.org/writing/gotchas/">most common gotcha</a>
+and obviating the need for endless <code>x = x or []</code> statements within functions. Similarly,
+arguments that default to config variables can be specified in the function arguments
+rather than in its definition.</p>
+
+<p>
+There is also a slightly dubious scheme for aliases to help compatibility with other
+systems (notably Bazel and Buck) which name some arguments differently (e.g. <code>compiler_flags</code>
+vs. <code>cflags</code> vs. <code>copts</code>, <code>test_only</code> vs. <code>testonly</code>, etc). This isn't widely advertised
+but does save a lot of fiddly argument checking in the rules themselves.</p>
+
+<p>
+Dictionaries are probably the poorest imitation of the Python equivalent - they can only
+be keyed by strings and can't be iterated directly - but <code>.items()</code>, <code>.keys()</code> and <code>.values()</code>
+all return their lists in a consistent order, avoiding the <code>sorted(d.items())</code> boilerplate
+we used to see. Exposing sources of nondeterminism into the BUILD language has proven
+extremely undesirable since it's easy to accidentally cause your rules to keep changing
+arbitrarily, which then sucks developers' time as they rebuild unnecessarily.</p>
+
+
+<h2>Asp</h2>
+<p>Internally, the parser has been christened <code>asp</code>. This is a bit of a play on AST, but more
+relevantly an asp is a kind of snake that's smaller than a python. Externally the language
+still remains unnamed.</p>
+
+<p>
+Once all the above was done, I was finally able to switch Please fully over. For a while it
+could support both parsers in parallel while I ironed out issues, but when version 12 finally
+hit the old ones were totally removed. This did necessitate some updates (as the major version
+bump indicates, there were breaking changes) to affected rules, but overall the migration was
+actually surprisingly bug-free given the complexity of the change<span class="fnrel">
+<sup><a href="#fn12">[12]</a></sup>
+<span class="footnote" style="display:none">asp is about 5000 lines, roughly 1/4 of Please as a whole. It is probably easier to get right than the build code which has more subtle interactions, but still a higher bug rate wouldn't have been surprising. Maybe the afternoon I spent fuzzing the parser was time well spent after all...</span>
+</span>. To be honest I'm not
+sure how many of the TM engineering team actually realised what had happened - which is really
+the best kind of change for this kind of tool.</p>
+
+<p>
+This also means that Please is now pure Go<span class="fnrel">
+<sup><a href="#fn13">[13]</a></sup>
+<span class="footnote" style="display:none">I do worry a bit about the drive to pure Go. It certainly is easier for Go projects to interact with pure Go, and the results are often better, but it reminds me of the Java monoculture where every dependency has to get reinvented into that language.</span>
+</span>, which is much easier to support than cgo with
+external libraries, and it has no dependency on any system components<span class="fnrel">
+<sup><a href="#fn14">[14]</a></sup>
+<span class="footnote" style="display:none">Well, beyond the usual <code>libc</code> and <code>libpthread</code> suspects, but those are easy enough to rely on - versus <code>libpython</code> which, as discussed earlier, had already given us issues.</span>
+</span>. I don't regret doing
+it this way around - in hindsight I'd have done asp a bit sooner, I thought it'd be harder
+than it was - but using cffi at first was certainly the right decision. I doubt the project
+would have gotten off the ground if I'd had to write 5000 extra lines of parser before it
+could even read the first BUILD file.</p>
+
+<p>
+Moral of the story: Writing something like this isn't as hard as you might think. More
+people should give it a go - there is a tendency to think of compilers as being some kind
+of impossibly advanced technology that mere mortals can't understand, which of course
+isn't true. Having said that, pick your battles wisely - this describes a parser for a subset
+of Python which is a pretty simple and extremely well-designed language. If you start writing
+a parser for C++ based on this and discover it's nigh impossible, well, don't come blaming me!</p>
+
+
+<h2>Skylark</h2>
+<p>As a quick aside, the question has been raised of why we don't use <a href="https://github.com/google/skylark">Skylark</a>.
+In reverse order of importance:
+<ol>
+<li>The Go implementation wasn't public (or at least I didn't know of it) when I started.</li>
+<li>I was having a blast writing asp and didn't want to give it up.</li>
+<li>It isn't fully compatible; among other things they target Python 2 compatibility which
+    I consider a non-goal<span class="fnrel">
+<sup><a href="#fn15">[15]</a></sup>
+<span class="footnote" style="display:none">To be clear, all else being equal, I would maintain compatibility, but I just attach no value to it. It's 2018, Python 2 doesn't have long to live.</span>
+</span> so it can't support our function annotations, and their
+    facility for <code>load()</code> is less powerful than plz's <code>subinclude()</code>.</li>
+<li>By far most importantly, I don't want to give up control of the language, which is
+    a central feature of Please. If we adopted Skylark we'd be beholden to their roadmap
+    and technical decisions which I might not agree with.</li>
+</ol>
+It does feel a little odd to be a small individual project choosing not to go with an
+established solution from a bigger company, but then I guess that sums up an awful
+lot of Please in a nutshell.</p>
+
+      </div>
+      <div class="right">
+        <p>By topic:
+        <ul>
+      	
+      	<li><a href="tag_bugs.html" >bugs</a></li>
+      	
+      	<li><a href="tag_build systems.html" >build systems</a></li>
+      	
+      	<li><a href="tag_languages.html" >languages</a></li>
+      	
+      	<li><a href="tag_plots.html" >plots</a></li>
+      	
+      	<li><a href="tag_plz.html" >plz</a></li>
+      	
+      	<li><a href="tag_python.html" >python</a></li>
+      	
+      	<li><a href="tag_rants.html" >rants</a></li>
+      	
+      	<li><a href="tag_soapbox.html" >soapbox</a></li>
+      	
+        </ul>
+	<br/><br/>
+	</p>
+        <p>By date:
+        <ul>
+      	
+      	<li><a href="sep_2018.html">Sep 2018</a></li>
+      	
+      	<li><a href="aug_2018.html">Aug 2018</a></li>
+      	
+        </ul>
+	</p>
+      </div>
+    </div>
+</body>
+</html>

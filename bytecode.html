@@ -1,0 +1,290 @@
+<html>
+<head>
+  <title>A Tale of Two (or three) Bytecodes</title>
+  <link href="https://fonts.googleapis.com/css?family=Inconsolata" rel="stylesheet">
+  <link rel="stylesheet" type="text/css" href="styles.css">
+  <script src="stuff.js" defer></script>
+</head>
+<body>
+    <div class="above">
+      <div class="left">
+	<div class="logo">
+          <h1><a href="index.html">Peter's blog<span class="green">:</span></a></h1>
+	</div>
+      </div>
+      <div class="right">
+	<div class="header">
+          <div>
+            <div>
+              <a href="https://github.com/peterebden">Github</a>
+            </div>
+          </div>
+	</div>
+      </div>
+    </div>
+    <div class="above">
+      <div class="left">
+        <h1>A Tale of Two (or three) Bytecodes</h1>
+        
+<h2>Builds & non-determinism</h2>
+<p>One of the things we're keen on at work is deterministic builds; our
+<a href="https://please.build">build system</a> caches based on file hashes so if outputs
+change arbitrarily that causes people to have to rebuild things they shouldn't -
+and in the limiting case, run tests that they didn't have to.</p>
+
+<p>
+A few months ago a couple of us spotted a case where we were getting different
+results from one of the build servers, and started digging in to investigate.
+In the end it took a few hours and a deep dive through some of CPython's
+internals to figure out what was going on.</p>
+
+
+<h2>Python bytecode</h2>
+<p>As we all know, Python is primarily an interpreted language, but the most
+common implementations compile the source into bytecode before executing.
+This article is primarily about CPython 3 but the same principles might (or
+might not) apply to others<span class="fnrel">
+<sup><a href="#fn1">[1]</a></sup>
+<span class="footnote" style="display:none">PyPy certainly has bytecode, but I've not tested if it exhibits the behaviour described here. Python 2 differs in some minor details but who cares about that now anyway.</span>
+</span> as well.</p>
+
+<p>
+Python saves the bytecode files in a <code>__pycache__</code> subdirectory which is an
+optimisation to save it from re-parsing the files later on. We do the same at
+build time and wrap that up into the <a href="https://github.com/pantsbuild/pex">pex</a>
+files that we deploy.</p>
+
+<p>
+After a little bit of fiddling, we determined that the pex files were differing
+in one of the <code>.pyc</code> files in it - and it was one corresponding to one of our
+source files, but only one out of several hundred. What was going on?</p>
+
+
+<h2>Bytecode structure</h2>
+<p><a href="https://nedbatchelder.com/blog/200804/the_structure_of_pyc_files.html">This</a> is
+a good explanation of the structure of bytecode files. Briefly, up until Python
+3.6, they look like this:</p>
+
+<p>
+<pre>
+------------------------------------------
+|         |        |        |            |
+0  magic  4  time  8  size  12  code...  |
+|         |        |        |            |
+------------------------------------------
+</pre>
+
+<p>
+The first 4 bytes contain a magic number to identify the file and help detect
+some encoding errors. The second four byte word contains the modification timestamp
+of the file, then the third its size. These are used to determine whether the
+bytecode matches the input file or not.</p>
+
+<p>
+Obviously, embedding a timestamp is never deterministic, but we found that a long
+time ago and have code to identify & zero that, so we knew that wasn't the problem.</p>
+
+<p>
+In Python 3.7, the fantastic <a href="https://www.python.org/dev/peps/pep-0552/">PEP-552</a> has
+changed the format in order to allow a fully deterministic format. It looks like this:</p>
+
+<p>
+<pre>
+---------------------------------------------------------
+|         |         |              |        |           |
+0  magic  4  flags  8  validation  12 size  16 code...  |
+|         |         |              |        |           |
+---------------------------------------------------------
+</pre>
+The PEP describes the changes, but briefly the flags field defines how the file should
+be validated, and the following field contains the thing to check against (either a hash
+or a timestamp). Hence if hash verification is used there are no timestamps to worry
+about so everything should be deterministic. For the rest of this article we'll use
+this method to avoid any false positives from the timestamps.</p>
+
+
+<h2>Differences</h2>
+<p>So we knew which files were different, but they were exactly the same size, and
+comparing them side-by-side showed only a few differences in one part of the file.
+Fortunately Python bytecode is pretty rich and it's possible to link that back to
+the original source locations, and we found the culprit boiled down to something like:
+<pre>
+def test(x):
+    if x in {'ONE', 'TWO', 'THREE'}:
+        pass
+</pre>
+The error obviously occurred on the second line - so what's so special about it?
+We have lots of if statements and set literals all over our codebase, why is this
+one giving difficulty?</p>
+
+<p>
+Before we dig in any deeper, it's pretty easy to prove that this really is a thing
+using the sample given above:
+<pre>
+$ python3.7 -m compileall --invalidation-mode=unchecked-hash test.py
+Compiling 'test.py'...
+$ sha1sum __pycache__/test.cpython-37.pyc
+61e5682ca95e8707b4ef2a79f64566664dafd800  __pycache__/test.cpython-37.pyc
+$ rm __pycache__/test.cpython-37.pyc
+$ python3.7 -m compileall --invalidation-mode=unchecked-hash test.py
+Compiling 'test.py'...
+$ sha1sum __pycache__/test.cpython-37.pyc
+222a06621b491879e5317b34e9dd715bacd89b7d  __pycache__/test.cpython-37.pyc
+$ rm __pycache__/test.cpython-37.pyc
+$ python3.7 -m compileall --invalidation-mode=unchecked-hash test.py
+Compiling 'test.py'...
+$ sha1sum __pycache__/test.cpython-37.pyc
+0cf106f696caa6dec81e333597b416bc1cda6475  __pycache__/test.cpython-37.pyc
+</pre>
+Your results might vary a little, since it's nondeterministic; but trying it a
+few times pretty easily produces two different hashes.</p>
+
+
+<h2>hexl-mode</h2>
+<p>Looking at the two side-by-side using hexl-mode<span class="fnrel">
+<sup><a href="#fn2">[2]</a></sup>
+<span class="footnote" style="display:none">thus proving that there is no problem that cannot be tackled by Emacs - although as far as I know there is no pyc-mode...</span>
+</span> we see the following:</p>
+
+<p>
+<pre>
+00000000: 420d 0d0a 0000 0000 13d8 a05b 4300 0000  B..........[C...
+00000010: e300 0000 0000 0000 0000 0000 0002 0000  ................
+00000020: 0040 0000 0073 0c00 0000 6400 6401 8400  .@...s....d.d...
+00000030: 5a00 6402 5300 2903 6301 0000 0000 0000  Z.d.S.).c.......
+00000040: 0001 0000 0002 0000 0043 0000 0073 1400  .........C...s..
+00000050: 0000 7c00 6401 6b06 7210 7400 7c00 8301  ..|.d.k.r.t.|...
+00000060: 0100 6400 5300 2902 4e3e 0300 0000 da05  ..d.S.).N>......
+00000070: 5448 5245 45da 034f 4e45 da03 5457 4f29  THREE..ONE..TWO)
+00000080: 01da 0570 7269 6e74 2901 da01 78a9 0072  ...print)...x..r
+00000090: 0600 0000 fa07 7465 7374 2e70 79da 0474  ......test.py..t
+000000a0: 6573 7401 0000 0073 0400 0000 0001 0801  est....s........
+000000b0: 7208 0000 004e 2901 7208 0000 0072 0600  r....N).r....r..
+000000c0: 0000 7206 0000 0072 0600 0000 7207 0000  ..r....r....r...
+000000d0: 00da 083c 6d6f 6475 6c65 3e01 0000 0073  ...<module>....s
+000000e0: 0000 0000                                ....
+</pre>
+
+<p>
+<pre>
+00000000: 420d 0d0a 0000 0000 13d8 a05b 4300 0000  B..........[C...
+00000010: e300 0000 0000 0000 0000 0000 0002 0000  ................
+00000020: 0040 0000 0073 0c00 0000 6400 6401 8400  .@...s....d.d...
+00000030: 5a00 6402 5300 2903 6301 0000 0000 0000  Z.d.S.).c.......
+00000040: 0001 0000 0002 0000 0043 0000 0073 1400  .........C...s..
+00000050: 0000 7c00 6401 6b06 7210 7400 7c00 8301  ..|.d.k.r.t.|...
+00000060: 0100 6400 5300 2902 4e3e 0300 0000 da05  ..d.S.).N>......
+00000070: 5448 5245 45da 0354 574f da03 4f4e 4529  THREE..TWO..ONE)
+00000080: 01da 0570 7269 6e74 2901 da01 78a9 0072  ...print)...x..r
+00000090: 0600 0000 fa07 7465 7374 2e70 79da 0474  ......test.py..t
+000000a0: 6573 7401 0000 0073 0400 0000 0001 0801  est....s........
+000000b0: 7208 0000 004e 2901 7208 0000 0072 0600  r....N).r....r..
+000000c0: 0000 7206 0000 0072 0600 0000 7207 0000  ..r....r....r...
+000000d0: 00da 083c 6d6f 6475 6c65 3e01 0000 0073  ...<module>....s
+000000e0: 0000 0000                                ....
+</pre>
+
+<p>
+That probably looks a bit like a game of Spot the Difference, but
+fortunately our carefully-chosen string constants stick out like a sore
+thumb as being in a different order<span class="fnrel">
+<sup><a href="#fn3">[3]</a></sup>
+<span class="footnote" style="display:none">In the actual original case, these were integer enums so it took us a bit longer to figure out what was going on.</span>
+</span>.</p>
+
+<p>
+So at this point we remember that Python sets are not ordered and
+so it seems not totally surprising that they are coming out differently.
+Except that, as I mentioned before, this is far from the only set literal
+in our codebase and we don't see this effect from any others. For example,
+the following code does <em>not</em> generate the same nondeterminism:
+<pre>
+x = {'ONE', 'TWO', 'THREE'}
+</pre>
+On the bright side, we have a fix; setting <code>PYTHONHASHSEED=42</code><span class="fnrel">
+<sup><a href="#fn4">[4]</a></sup>
+<span class="footnote" style="display:none">Or any value really, but why would we use anything other than the Answer when given an opportunity?</span>
+</span> while
+running our <code>compile_all</code> step will produce the same output every time.
+And indeed this was how we fixed the issue, but at that point our
+intellectual curiosity was well beyond fixing the actual problem.</p>
+
+
+<h2>Peepholes</h2>
+<p>So after some digging through the CPython source<span class="fnrel">
+<sup><a href="#fn5">[5]</a></sup>
+<span class="footnote" style="display:none">CPython isn't trivial, but the source is really very readable - it's worth having a look and trying to understand, it's by no means an impenetrable black box.</span>
+</span> with the help of a
+local debug build, it turns out that the values in a set literal are loaded
+as a tuple. In the bytecode this is a series of <code>LOAD_CONST</code> instructions
+(one for each value). However if we look at the nondeterministic example,
+it only has one <code>LOAD_CONST</code> which is followed by a <code>frozenset</code> object.
+What's happened here?</p>
+
+<p>
+After a bit more code spelunking, this turns out to be an optimisation
+applied by CPython. There is what's called a "peephole optimiser", which
+is a term for a local optimiser in a compiler that recognises specific
+local patterns which can be turned into a more optimal form. These are
+pretty common since they're very fast to run, relatively easy to write
+and can give a nice speedup on appropriate code. Conversely, more
+powerful techniques may require further-reaching changes - for example,
+inlining a function can provide a great performance boost, but it's hard
+to do without e.g. breaking stacktraces or other subtle semantics.</p>
+
+<p>
+This particular peephole optimisation knows about set literals and when
+they're in a context where the set will not be used again will optimise to
+an immutable <code>frozenset</code>. This obviously can't be done for most set
+literals since it can't prove that they won't be changed later on. So
+this explains why we only get it in this limited scope and why it was so
+rare in our codebase - it's just not common to write a constant set literal
+in that kind of context.</p>
+
+
+<h2>Resolution?</h2>
+<p>As mentioned before, setting <code>PYTHONHASHSEED</code> to a known value works around
+the issue, which is indeed what we did. At the time I didn't think it
+really counted as a bug since (also as mentioned) the bytecode in Python 3.6
+wasn't actually deterministic anyway because of the timestamps in it,
+but in the post-PEP 552 world it might be. For now it's
+<a href="https://bugs.python.org/issue34722">logged upstream</a> so hopefully in
+a future version we'll no longer have to worry.</p>
+
+      </div>
+      <div class="right">
+        <p>By topic:
+        <ul>
+      	
+      	<li><a href="tag_bugs.html" >bugs</a></li>
+      	
+      	<li><a href="tag_build systems.html" >build systems</a></li>
+      	
+      	<li><a href="tag_languages.html" >languages</a></li>
+      	
+      	<li><a href="tag_plots.html" >plots</a></li>
+      	
+      	<li><a href="tag_plz.html" >plz</a></li>
+      	
+      	<li><a href="tag_python.html" >python</a></li>
+      	
+      	<li><a href="tag_rants.html" >rants</a></li>
+      	
+      	<li><a href="tag_soapbox.html" >soapbox</a></li>
+      	
+        </ul>
+	<br/><br/>
+	</p>
+        <p>By date:
+        <ul>
+      	
+      	<li><a href="sep_2018.html">Sep 2018</a></li>
+      	
+      	<li><a href="aug_2018.html">Aug 2018</a></li>
+      	
+        </ul>
+	</p>
+      </div>
+    </div>
+</body>
+</html>

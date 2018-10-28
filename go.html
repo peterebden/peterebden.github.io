@@ -1,0 +1,225 @@
+<html>
+<head>
+  <title>Go</title>
+  <link href="https://fonts.googleapis.com/css?family=Inconsolata" rel="stylesheet">
+  <link rel="stylesheet" type="text/css" href="styles.css">
+  <script src="stuff.js" defer></script>
+</head>
+<body>
+    <div class="above">
+      <div class="left">
+	<div class="logo">
+          <h1><a href="index.html">Peter's blog<span class="green">:</span></a></h1>
+	</div>
+      </div>
+      <div class="right">
+	<div class="header">
+          <div>
+            <div>
+              <a href="https://github.com/peterebden">Github</a>
+            </div>
+          </div>
+	</div>
+      </div>
+    </div>
+    <div class="above">
+      <div class="left">
+        <h1>Go</h1>
+        
+<h2>Background</h2>
+<p>At this point, we probably all know what <a href="https://golang.org">Go</a> is. In their
+own words:
+<pre>
+Go is an open source programming language that makes it easy to build simple, reliable, and efficient software.
+</pre>
+
+<p>
+<img src="gopher.png" align=right alt="Picture of a British Gopher"></p>
+
+<p>
+So... that's all then? We all want (or should want) simplicity, reliability and efficiency,
+and Go makes it easy to get all three. Problem solved, kthxbai.</p>
+
+<p>
+
+Still here?</p>
+
+<p>
+
+OK, so let's dig into this a bit more. We're all building software, and to do that we choose
+a set of tools that include thing like an operating system, IDE, third-party libraries and,
+crucially to this post, a language. So on what basis do we make these decisions?</p>
+
+<p>
+A reasonable answer is probably something like "to maximise our ability to deliver features
+fast and reliably"<span class="fnrel">
+<sup><a href="#fn1">[1]</a></sup>
+<span class="footnote" style="display:none">If we were trying to formally optimise this, we might describe this as an objective function.</span>
+</span>. Depending on who we are and what we're doing, we prioritise different parts
+of that differently; an early-stage startup values "fast" more than a well-established company
+with a reputation to maintain. For the purposes of this, I'm leaving out any specific requirements
+like "we're selling an IntelliJ plugin" or "we're going to deep learn the shit out of things using
+Tensorflow" that mean that the choice of language is already made.</p>
+
+<p>
+Now depending on what we need to do, we might again have strict requirements that constrain
+our choice; maybe we're working on a game, or something similarly performance-intensive, in
+which case we might constrain our choices to languages with sufficiently good performance,
+say C++ or Rust. But let's say we're not, we're working in the performance envelope that 90%
+of companies are where we care about it but don't require it to be totally optimal.</p>
+
+
+<h2>Languages</h2>
+<p>So at this point we have a lot of different options; Python, Javascript, Java, Ruby and of
+course Go, each with different frameworks and libraries that we can choose from. How could we
+separate them? Well, one central part of the character of a language is static vs. dynamic
+typing; that's something of a perennial argument and there clearly isn't a simple answer that
+one is "better", otherwise there wouldn't be so many options for both. Go has a few slight
+nods in this direction (type inference for <code>:=</code> and the structurally typed nature of interfaces)
+but it is static - so we'll look for another angle to compare on.</p>
+
+<p>
+A good one here is development velocity. Dynamic languages typically do better at this, but
+Go has done a great job of catching up via prioritising fast compile times. The experience of
+developing using Go is much closer to Python than to Java in terms of speed<span class="fnrel">
+<sup><a href="#fn2">[2]</a></sup>
+<span class="footnote" style="display:none">Go isn't _usually_ faster to iterate than Python, but I've seen it happen when the overhead of all the imports at startup takes longer than an incremental Go compile.</span>
+</span>, and speed is
+a feature of its own; getting faster feedback on your work is always better and past a certain
+point it can be transformative<span class="fnrel">
+<sup><a href="#fn3">[3]</a></sup>
+<span class="footnote" style="display:none">This, as many things, deserves more space to expound on it - but basically if compiling your test takes 30 seconds, you might switch to Chrome while waiting. If it takes 3 seconds, you won't bother.</span>
+</span>. Go isn't necessarily the best possible in this arena, but
+it is pretty good (and will always heavily beat languages that are deoptimised for this).</p>
+
+<p>
+Similarly, runtime speed is also important. If you're working on a command-line tool it is
+crucial; getting feedback immediately makes it feel responsive and satisfying. Waiting a
+sluggish several hundred ms to even get the usage instructions isn't great, and those can
+easily stack up as commands are chained together. Compiling to native binaries<span class="fnrel">
+<sup><a href="#fn4">[4]</a></sup>
+<span class="footnote" style="display:none">At work some time back I discovered that when we sent a pull request, the tool was unnecessarily checking versions of all of our linters. Doing that to all the Python, Java and Javascript linters took around 1.5 seconds total; some back-of-the-envelope calculations suggests that happens about 6,000 times a month across the whole dev team, or about 2.5 hours of wasted time - so ten minutes to fix that was earned back very quickly, but more to the current point, we'd never have had that problem in the first place if those tools could start as fast as Go binaries.</span>
+</span> in the end
+proves a huge win and is fantastic for deployment as well.</p>
+
+<p>
+Startup time is obviously less of a concern for long-running servers, but in that arena
+performance and memory usage are very real to you - one way or another you're paying for
+the hardware you're running on! Again in these areas Go does very well, its runtime performance
+tends to be roughly equivalent to languages like Java or C#<span class="fnrel">
+<sup><a href="#fn5">[5]</a></sup>
+<span class="footnote" style="display:none">This kind of thing is pretty hard to measure in an uncontroversial way - but in general it is clearly in the same region as those languages, versus alternatives like Python or Ruby that are clearly not at the same level.</span>
+</span>, and I've been continually
+impressed at its memory usage; at work a typical Go server can run in an order of magnitude less
+memory than a Python server, and two orders less than Java servers. Over a fleet that can
+seriously add up, and it can also save you from having to find other optimisations which often
+increase complexity.</p>
+
+<p>
+Finally, coding in it clearly cannot be argued to be as concise as Python. Go deliberately
+eschews complex constructs in favour of simplicity - and repetition. That seems nonideal
+at first, but does have a great hidden advantage of a very short learning curve. We frequently
+see developers who've never written Go before becoming productive within days, and understanding
+each other's code remains simple since there's relatively little "magic"<span class="fnrel">
+<sup><a href="#fn6">[6]</a></sup>
+<span class="footnote" style="display:none">I've seen several failed projects over the years due to this - e.g. one written in a framework that rendered it obtuse to everyone but the author, and one that reached wider agreement initially but ultimately other developers refused to learn what they saw as excessive dependency injection magic. Complexity is and will always be the enemy.</span>
+</span> obscuring what's
+happening.</p>
+
+
+<h2>Quality vs. Quantity</h2>
+<p>If I was going to sum up the features I listed above, the theme I find is that Go is not terribly
+good at qualitative features of a language - it doesn't have generics<span class="fnrel">
+<sup><a href="#fn7">[7]</a></sup>
+<span class="footnote" style="display:none">By law all articles relating to Go on a meta-level must mention the lack of generics within the first few pages. I will come back to this again though...</span>
+</span>, doesn't have macros,
+doesn't have sum types, doesn't have exceptions, etc. But it is excellent at qualitative features
+of being a language - fast compilation, fast runtime speed, memory efficient, short learning curve,
+and simple error handling. Credit is due to the authors for recognising how important all of those
+things are and for having the courage to do something a bit different - the easy way out is to
+bang in every feature anyone asks for and compromise your vision.</p>
+
+<p>
+A bitter pill for us to swallow as developers is that while we all love some of those qualitative
+features, it turns out that they may not actually be very well correlated with writing reliable
+and performant software. Over the last few years I've had occasion to write several websocket
+servers for one reason or another, and writing one in Go was simple and easy and caused basically
+no problems at all - conversely our efforts on other languages were much less successful, either
+due to runtime issues or nasty APIs, in which generics were no comfort at all.</p>
+
+<p>
+When I started Go I had programmed most in C++ previously and so not having generics seemed
+terrifying; after a month or so I realised I wasn't actually missing them much, and later still
+I realised that of course you never really use them as much as all that<span class="fnrel">
+<sup><a href="#fn8">[8]</a></sup>
+<span class="footnote" style="display:none">I do wish they had introduced <code>sort.Slice</code> a bit sooner though, that would have saved some boilerplate early on for sure.</span>
+</span>. Similarly for most
+things you don't need operator overloading<span class="fnrel">
+<sup><a href="#fn9">[9]</a></sup>
+<span class="footnote" style="display:none">Although a good<span class="fnrel">
+<sup><a href="#fn10">[10]</a></sup>
+<span class="footnote" style="display:none">i.e. not <code>java.math.BigDecimal</code>.</span>
+</span> arbitrary-precision decimal class really does need them.</span>
+</span> or inheritance. Conversely, having a good set of
+solid builtin libraries for string manipulation<span class="fnrel">
+<sup><a href="#fn11">[11]</a></sup>
+<span class="footnote" style="display:none">It's possible that one day I will understand how <code>std::string</code> can have so many methods without ever having the useful ones that you want, but so far I have not achieved that level of C++ enlightenment.</span>
+</span>, JSON encoding and HTTP communication
+proved its worth very rapidly.</p>
+
+
+<h2>Defining achievement</h2>
+<p>After a year or two of hacking in various languages I realised that I was actually enjoying
+Go the most, which really took me aback for a while. After a bit of deep(ish) thought about it
+I realised that I liked it not because of any real quality of the language, but because I was
+getting on and <em>doing</em> things with it. I feel this is really key to it all; many other languages
+give you a feeling of success because you have triumphed over the difficulties they throw up.
+Go tries to minimise that so there is less of that feeling, but if you derive a sense of
+achievement from what you are actually delivering, it's pretty hard to beat.</p>
+
+<p>
+And isn't that what we should all be focusing on, after all? Certainly in a work environment
+we are not paid to overcome our compiler<span class="fnrel">
+<sup><a href="#fn12">[12]</a></sup>
+<span class="footnote" style="display:none">Not even if we turn on <code>-Wall -Wpedantic -Weverything -Wyou-shall-not-pass</code>.</span>
+</span>, we're paid to deliver a product for our
+employer. Maybe that's done better in another language (and yes, very often the cost of change
+renders it impractical), but in most cases I don't think it is.</p>
+
+      </div>
+      <div class="right">
+        <p>By topic:
+        <ul>
+      	
+      	<li><a href="tag_bugs.html" >bugs</a></li>
+      	
+      	<li><a href="tag_build systems.html" >build systems</a></li>
+      	
+      	<li><a href="tag_languages.html" >languages</a></li>
+      	
+      	<li><a href="tag_plots.html" >plots</a></li>
+      	
+      	<li><a href="tag_plz.html" >plz</a></li>
+      	
+      	<li><a href="tag_python.html" >python</a></li>
+      	
+      	<li><a href="tag_rants.html" >rants</a></li>
+      	
+      	<li><a href="tag_soapbox.html" >soapbox</a></li>
+      	
+        </ul>
+	<br/><br/>
+	</p>
+        <p>By date:
+        <ul>
+      	
+      	<li><a href="sep_2018.html">Sep 2018</a></li>
+      	
+      	<li><a href="aug_2018.html">Aug 2018</a></li>
+      	
+        </ul>
+	</p>
+      </div>
+    </div>
+</body>
+</html>

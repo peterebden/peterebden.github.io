@@ -1,0 +1,254 @@
+<html>
+<head>
+  <title>Please</title>
+  <link href="https://fonts.googleapis.com/css?family=Inconsolata" rel="stylesheet">
+  <link rel="stylesheet" type="text/css" href="styles.css">
+  <script src="stuff.js" defer></script>
+</head>
+<body>
+    <div class="above">
+      <div class="left">
+	<div class="logo">
+          <h1><a href="index.html">Peter's blog<span class="green">:</span></a></h1>
+	</div>
+      </div>
+      <div class="right">
+	<div class="header">
+          <div>
+            <div>
+              <a href="https://github.com/peterebden">Github</a>
+            </div>
+          </div>
+	</div>
+      </div>
+    </div>
+    <div class="above">
+      <div class="left">
+        <h1>Please</h1>
+        
+<h2>Background</h2>
+<p><a href="https://please.build">Please</a> is a build system I wrote for <a href="https://thoughtmachine.net">Thought Machine</a>.
+It is very similar to Google's Blaze, which was a direct inspiration - the early employees at TM were mostly
+ex-Googlers and we all missed it deeply. We'd all used it, because everyone there does<span class="fnrel">
+<sup><a href="#fn1">[1]</a></sup>
+<span class="footnote" style="display:none">Unless you're working 100% on Android, Chromium or some similar open source project which has a separate system for building externally.</span>
+</span>, although it's
+fair to say Paul and I had delved in the deepest, and had the dubious honour of having broken some related
+parts of Google's internal infrastructure by pushing Blaze far past the point most reasonable people would.</p>
+
+<p>
+For everyone who hasn't used Blaze, Please is functionally similar to <a href="https://bazel.io">Bazel</a>,
+<a href="https://buckbuild.com">Buck</a> and <a href="https://pantsbuild.org">Pants</a>. It's probably fair to say that all
+four projects have their own strengths and focuses. All four systems describe their metadata in a
+similar way (a syntactical subset of Python) in files usually named <code>BUILD</code>. All four prioritise
+speed, reproducibility and hermeticity. Etc.</p>
+
+<p>
+At Thought Machine, we actually started out using Gradle, of all things; at the time we had quite
+a lot of Java and it seemed like a better option than anything else. We quickly fell out of love
+after finding incrementality issues, abysmal performance and poor extensibility<span class="fnrel">
+<sup><a href="#fn2">[2]</a></sup>
+<span class="footnote" style="display:none">Braintree have <a href="https://www.braintreepayments.com/blog/migrating-from-gradle-to-bazel/">a good article</a> on this which echoes most of the problems we had better than I can here.</span>
+</span>. Python was
+rapidly taking over our codebase and after a bit of a survey we settled on Buck for our next step.
+Some custom tweaking<span class="fnrel">
+<sup><a href="#fn3">[3]</a></sup>
+<span class="footnote" style="display:none">Mostly for getting binary Python modules importing seamlessly out of the .pex files Buck would build. This could bear a future article of its own; we have a more refined system now but it is still ultimately derived from the code written four years ago, and shares the same bad jokes.</span>
+</span> was required to get it working fully, but after that the deployment issues
+for Python code were solved, and for a while things were going pretty well.</p>
+
+<p>
+Fast-forwarding six months or so, we were ramping up frontend development and trying to add more
+technologies (notably <a href="https://github.com/google/protobuf">protocol buffers</a>) on the backend. Doing
+that with Buck was proving hard<span class="fnrel">
+<sup><a href="#fn4">[4]</a></sup>
+<span class="footnote" style="display:none">For the curious: <a href="https://buckbuild.com/rule/genrule.html">genrule</a> only allows one output, and there is no way to access transitive dependencies during build.</span>
+</span> without modifying Buck's own Java code, which none of us were
+desperately keen on doing. A high-level design meeting<span class="fnrel">
+<sup><a href="#fn5">[5]</a></sup>
+<span class="footnote" style="display:none">At the pub one evening, which is a traditional site of British innovation.</span>
+</span> was held where we decided that we could
+solve this ourselves and recited the traditional engineering mantras of "how hard can it be" and
+"what could possibly go wrong".</p>
+
+
+<h2>Conception</h2>
+<p>At this point we had decided to go for it, and so the first priority was coming up with a name. We
+rapidly<span class="fnrel">
+<sup><a href="#fn6">[6]</a></sup>
+<span class="footnote" style="display:none">There was actually another name proposed first, but we all liked Please better, and it's subsequently been lost to the mists of time.</span>
+</span> settled on Please, mostly because we like to sound polite which "please build" and
+"please test" fitted well, and the obvious abbreviation to <code>plz</code> is nice for a command-line tool.
+The domain was registered on the spot and we moved on to the next question: what language should
+it be written in?</p>
+
+<p>
+<img src="merchants-tavern.jpg" align=right alt="The site of conception"></p>
+
+<p>
+We solved that one by a process of elimination. Roughly, our thoughts were:
+<ul>
+<li><b>Python</b>: too slow, poor multithreading support.</li>
+<li><b>C</b>: too low-level, nearly nothing built in.</li>
+<li><b>C++</b>: too complex, I was the only one who really knew (or liked) it.</li>
+<li><b>Java</b>: the JVM is awfully suboptimal for a command-line tool.</li>
+<li><b>Rust</b>: too young<span class="fnrel">
+<sup><a href="#fn7">[7]</a></sup>
+<span class="footnote" style="display:none">At this point we are still in 2015, pre Rust 1.0.</span>
+</span>, probably more complex than we need.</li>
+<li><b>Go</b>: Great parallelism, native binaries, strong libraries.</li>
+</ul>
+Of course, the grand total of lines of Go written by any of us present was actually zero. But
+we didn't let that stop us<span class="fnrel">
+<sup><a href="#fn8">[8]</a></sup>
+<span class="footnote" style="display:none">Because of the aforementioned mantras.</span>
+</span> and early<span class="fnrel">
+<sup><a href="#fn9">[9]</a></sup>
+<span class="footnote" style="display:none">Earlyish.</span>
+</span> the next morning I got a good strong cup of coffee,
+set up the new repository, rolled up my sleeves and started writing and learning Go at roughly
+equal rates.</p>
+
+<p>
+Obviously it took a little while to get the nascent Please to a point where it was actually
+useful - but rather gratifyingly, that was faster than I expected. The time needed to become
+productive with Go was shockingly short and despite some failed experimentation initially<span class="fnrel">
+<sup><a href="#fn10">[10]</a></sup>
+<span class="footnote" style="display:none">Some fiddling on how best to handle our complex command-line flag setup (tl;dr: the standard <code>flags</code> package wasn't up to it, <a href="https://github.com/jessevdk/go-flags/">go-flags</a> is amazing) and a lot of time sunk into failed parser experiments, which really deserves an article of its own.</span>
+</span>
+it was self-hosting after only a couple of months and a little later was very nearly a drop-in
+replacement to our main repo.</p>
+
+<p>
+The whole undertaking didn't really meet with 100% approval from Paul, our CEO; in fact various
+dire threats were uttered in between telling us to "get on with our work" and "stop messing
+around with the build system". Fortunately in the end nobody was actually fired and the company
+settled down on plz very quickly.</p>
+
+
+<h2>Design</h2>
+<p>As mentioned before, Please is (very) strongly inspired by Blaze. The concepts of correct
+incrementality, cross-language builds, extensibility and strong support for stitching in arbitrary
+build actions all seemed pretty obvious in hindsight, although the specific syntax used is
+more directly mimicked - but of course, if it ain't broke...</p>
+
+<p>
+An obvious trade-off in the design was the requirement of describing the build metadata very
+explicitly in BUILD files. This certainly does put more onus on developers to specify their
+requirements than other systems might - for example, <code>go build</code> extracts its information from
+the source files (although it includes some build directives as syntactic comments, such as
+build tags and cgo instructions, so in a real sense some build metadata really is still necessary).
+At the end of the day it doesn't take long to write BUILD files and it's then easy for the system
+and other developers to understand what's going on. Retaining a relentless focus on the build
+process being able to generate everything also avoids manual steps - for example, we use
+<a href="https://github.com/google/protobuf">Protocol Buffers</a> and <a href="https://grpc.io">gRPC</a> extensively
+to generate client code for various languages, but the versions seen by the compiled code are
+always up-to-date, there is never any requirement for developers to rebuild and check in the
+generated code<span class="fnrel">
+<sup><a href="#fn11">[11]</a></sup>
+<span class="footnote" style="display:none">Checking in generated code is always a suboptimal and pernicious thing, and to be avoided where possible.</span>
+</span>.</p>
+
+<p>
+<img src="foundation.jpg" align=left alt="A novel with a very dubious connection to the topic at hand."></p>
+
+<p>
+We did make a very clear decision early on, that the core system would remain agnostic to the
+peculiarities of specific languages, and all the information about how to build them would itself
+be written in the BUILD language. This serves twin goals - first, that it's possible to extend to
+new languages dynamically since there is nothing special about the builtin ones, and secondly
+that we simply didn't have enough resource to do it the other way - writing hundreds of thousands
+of lines<span class="fnrel">
+<sup><a href="#fn12">[12]</a></sup>
+<span class="footnote" style="display:none">Buck was approximately 150,000 lines at the time; Bazel wasn't open sourced until a bit later but was even bigger. Please was around 5000 lines at v1.0, plus a couple of thousand lines of the still-unnamed build language. It's bigger now, of course, but still much smaller than the others.</span>
+</span> would have been beyond the little resource we had<span class="fnrel">
+<sup><a href="#fn13">[13]</a></sup>
+<span class="footnote" style="display:none">Any resemblance to <a href="https://en.wikipedia.org/wiki/Foundation_%28Asimov_novel%29">the Foundation</a> is of course totally coincidental.</span>
+</span>.</p>
+
+<p>
+Of course, a lot of the design was driven by the needs of Thought Machine; the nature of the
+product we were building and the industry we were in made the values we focused on particularly
+important. Just try telling someone used to working with highly verified software in a regulated
+environment that your open source policy is to run <code>npm install</code> and you don't really know how
+many copies of <code>is-odd</code> turn up...
+As well as that, we were also designing for the long term. We always had faith in the company's
+success, which meant future growth, and so we knew we'd need something to scale to tens or
+hundreds of developers - which requires a different set of tradeoffs to the setup you'd have for
+a small handful working with a smaller set of technologies.</p>
+
+
+<h2>Evolution</h2>
+<p>Please has come a long way since its version 1 all that time ago. We've added a lot of features,
+streamlined and optimised many things. Obviously these have primarily been driven by requirements
+from inside Thought Machine and contributors on Github, but we've always taken care to stay true
+to the original design principles, even when it's tempting to cut some corners.</p>
+
+<p>
+Nonetheless, being able to jump in and code up features our developers need is always great.
+For example, a long time back we added the ability to define custom command aliases, so that
+typing <code>plz deploy</code> will build and run a custom command. Subsequently this has been used
+extensively for many tools that our devs use, to the point where it seems most of the commands
+we need to run these days begin with <code>plz</code>. We've extended the same feature in Please to add
+better help and tab completion, none of which was ever remotely on the roadmap originally.</p>
+
+<p>
+Another interesting example has been sandboxing; some time back, we were having issues with our
+build machines coming under heavy load. After some investigation, one reason for that was that
+there were many tests requesting to start within Docker containers, and digging further into them
+it transpired that they were nearly all using them to get network segregation to avoid port clashes.
+Replacing nearly all of them with a custom sandbox that segregates network, process and IPC
+namespaces proved a lot lighter weight and spared our poor much-suffering build agents - as well
+as identifying a couple of tests that were unintentionally making outbound network requests.</p>
+
+
+<h2>Current state</h2>
+<p>Please is open source, under the Apache licence; you can <a href="https://github.com/thought-machine/please">check it out on Github</a>
+or learn more on <a href="https://please.build">the website</a>. There are instructions for installing
+binary versions, or it's pretty easy to build from scratch; you just need Go installed.</p>
+
+<p>
+It works fully on Linux (we mostly test on Ubuntu but it should be pretty distro-agnostic) and OSX.
+FreeBSD has been known to work in the past although we've not checked in a long time.</p>
+
+<p>
+Some of the topics here bear deeper dives of their own, but for now this should give a bit of
+a flavour of the general system, and what exactly I was thinking when I started all this...</p>
+
+      </div>
+      <div class="right">
+        <p>By topic:
+        <ul>
+      	
+      	<li><a href="tag_bugs.html" >bugs</a></li>
+      	
+      	<li><a href="tag_build systems.html" >build systems</a></li>
+      	
+      	<li><a href="tag_languages.html" >languages</a></li>
+      	
+      	<li><a href="tag_plots.html" >plots</a></li>
+      	
+      	<li><a href="tag_plz.html" >plz</a></li>
+      	
+      	<li><a href="tag_python.html" >python</a></li>
+      	
+      	<li><a href="tag_rants.html" >rants</a></li>
+      	
+      	<li><a href="tag_soapbox.html" >soapbox</a></li>
+      	
+        </ul>
+	<br/><br/>
+	</p>
+        <p>By date:
+        <ul>
+      	
+      	<li><a href="sep_2018.html">Sep 2018</a></li>
+      	
+      	<li><a href="aug_2018.html">Aug 2018</a></li>
+      	
+        </ul>
+	</p>
+      </div>
+    </div>
+</body>
+</html>
